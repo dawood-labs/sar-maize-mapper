@@ -67,6 +67,21 @@ The review flags are suggestions. The original file is never modified; the copy 
 marks `check_label` and `mixed_pixels` as `use_in_analysis = False`. `note_water` / `note_builtup` are kept
 (they are real members of a catch-all class). Check flagged fields on optical imagery before relabelling.
 
+Manual review decisions are made in the QC copy, never in the original file. Keep an audit trail:
+- back up the copy first;
+- keep the old class in `crop_original`;
+- record each change in `review_status` (for example `relabelled`, `returned_label_ok`, `excluded_...`) and
+  `review_note`, with the evidence;
+- when relabelling, change the class field *and* the class code field together (the pair must stay one-to-one).
+
+The analysis only reads the class field and `use_in_analysis`, so the extra columns are for people. Do not run
+`gcp-qc --write-copy --force` after a manual review: it rebuilds the copy from the automatic flags and discards
+those decisions.
+
+After the labels change, the `model` step refuses to reuse the old `model_<set>/` folder, because the holdout
+split no longer matches. Move that folder away, together with the old `model_*` map files. Then rerun with a new
+`--name`, so the features are extracted again with the new labels.
+
 ### Comparing settings in one pass
 
 `features` accepts several values at once, and every combination becomes a *feature set*:
