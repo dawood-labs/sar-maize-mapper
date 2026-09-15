@@ -547,6 +547,34 @@ Helpers: `load_run_context`, `config_differences`, `require_tracks`.
 Notebooks (thin, no outputs committed): `01_grid_and_audit`, `02_export`, `03_download_and_stack`, `04_pixel_explorer`.
 Notebook 02 calls `export.confirm_exports` in its confirmation cells before `submit_pending` / `monitor`.
 
+### 6.9 `analysis/` (ground-truth analysis, local only)
+
+```
+python -m sar_pipeline.analysis gcp-qc    --config <yaml> [--run RUN] [--write-copy [--force]]
+python -m sar_pipeline.analysis gcp-eda   --config <yaml> [--run RUN]
+python -m sar_pipeline.analysis features  --config <yaml> [--run RUN] [--bins half_month|N ...] [--starts YYYY-MM-DD ...]
+                                          [--windows W ...] [--interior-only] [--name NAME]
+python -m sar_pipeline.analysis evaluate  --config <yaml> [--run RUN] [--name NAME] [--sets SET ...] [--save-oof]
+python -m sar_pipeline.analysis cv-layers --config <yaml> [--run RUN] --set SET
+python -m sar_pipeline.analysis class-map --config <yaml> [--run RUN] --set SET [--name NAME] --map-config <yaml> [--map-run RUN]
+```
+- Reads only local run outputs (`run_config.yaml`, grid, manifest `local_paths` of VERIFIED rows, `band_layout.csv`,
+  `stack/track_<id>/dates.csv`). Writes to `processed/<aoi>/<season>/analysis/<run_id>/` (`pixel_features.analysis_dir`).
+- Config: `gcps.{path, class_field, id_field}` and `analysis.*` (defaults in `pipeline.example.yaml`). Class names and
+  codes come from the data (`gcp_qc.class_codes`, must be one-to-one); `analysis.target_class` must be one of them.
+- `gcp_qc`: `load_gcps` adds `gcp_id` (row order) and `label`. `write_qc_copy` writes `<stem>_qc.gpkg` next to the
+  original (never modified) from `gcp_review.csv`; `EXCLUDED_STATUSES = (check_label, mixed_pixels)` →
+  `use_in_analysis = False`. `load_fields` uses the copy when it exists, else all fields (warning).
+- `pixel_features`: `FeatureSet(kind, days, window, start)`, name `<hm|dN>_w<W>_s<MMDD|season>`. Bins end at the day
+  after the last acquisition. Columns `<track_id>__<set>__<VH|VV|VHmVV>__<bin start MMDD>` plus `pid, gcp_id, label,
+  group, border`. `columns_for_set` / `sets_in` parse names. Rows with non-finite values are dropped and counted
+  (`dropped_non_finite_rows` in `<name>.json`), then capped per field (`cap_per_field`, seeded).
+- `evaluate_cv`: `make_model(cfg)` (fixed RF from `analysis.rf`), `GroupKFold` on `group`. Summary columns
+  `target_precision, target_recall, target_f1, target_f1_field_vote, accuracy, macro_f1, f1_<class>, n_features`.
+- `maps.class_map`: requires identical band layouts in both runs (`check_same_layout`), rain flags from the training
+  run, prediction only where `pixel_index.tif` band 3 (`aoi_mask`) = 1. Class raster uint8 nodata 0; target
+  probability raster uint8 percent nodata 255; QML palette in class-code order.
+
 ---
 
 ## 7. Earth Engine gotchas (read before touching `s1_ard`, `audit`, `export`)

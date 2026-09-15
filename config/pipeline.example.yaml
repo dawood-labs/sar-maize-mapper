@@ -26,6 +26,11 @@ gcs:
   bucket: <gcs-bucket-name>
   base_folder: <project-folder-inside-bucket>
 
+gcps:                                  # optional: labelled polygons for analysis (keep under data/, never commit)
+  path: "data/gcps/<folder>/<polygons>.shp"
+  class_field: <class-name-field>
+  id_field: <class-code-field>
+
 grid:
   crs: "EPSG:<projected-crs-code>"   # ONE projected CRS (e.g. the UTM zone covering most of the AOI), used for the whole grid
   res: 10              # output pixel size in metres
@@ -85,3 +90,26 @@ export:
 qa:
   min_valid_pct: 80
   acknowledged_issues: []
+
+analysis:                       # ground-truth analysis: python -m sar_pipeline.analysis <step> (docs/08_analysis.md)
+  target_class: "<class-name>"  # class of interest, spelled exactly as in gcps.class_field
+  window_px: 5                  # odd window (pixels) averaged in linear power around each pixel; damps residual speckle
+  bins:
+    kind: half_month            # half_month (1-15, 16-end of month) | days (fixed N-day bins)
+    days: 15                    # bin length when kind is days
+    start: null                 # first date used, "YYYY-MM-DD"; null = season.start. Pick it from the crop calendar:
+                                # data long before planting adds features but no information (half_month needs day 1 or 16)
+  rain_mm_24h: 5                # an acquisition with more rain in the previous 24 h is dropped when its bin has a dry one
+  max_pixels_per_field: 200     # cap so large fields do not dominate training (fixed seed)
+  border_m: 10                  # pixels closer than this to a field edge are "border" pixels
+  group_cell_m: 5000            # spatial CV groups: fields in the same cell are always in the same fold
+  seed: 0
+  cv_folds: 5
+  rf:                           # fixed diagnostic Random Forest (compares features; not a tuned model)
+    n_estimators: 200
+    min_samples_leaf: 2
+    class_weight: balanced
+    max_features: sqrt
+  eda:
+    flat_classes: []            # classes whose typical curve is flat: skip the shape-correlation flag
+    mixed_classes: []           # catch-all classes with no typical curve: skip far/shape flags

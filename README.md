@@ -145,6 +145,7 @@ What each output file contains: [docs/05_outputs_and_folders.md](docs/05_outputs
 | [05 Outputs and folders](docs/05_outputs_and_folders.md) | you are looking for a file or a column |
 | [06 Troubleshooting](docs/06_troubleshooting.md) | something failed |
 | [07 Scaling to large AOIs](docs/07_scaling_to_large_aois.md) | processing a country-scale AOI |
+| [08 Ground-truth analysis](docs/08_analysis.md) | checking labelled fields, comparing features, making a first class map |
 | [Glossary](docs/glossary.md) | a term is unclear |
 | [Developer: interfaces](docs/developer/interfaces.md) | changing code |
 | [Developer: testing](docs/developer/testing.md) | writing or running tests |
