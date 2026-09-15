@@ -557,6 +557,7 @@ python -m sar_pipeline.analysis features  --config <yaml> [--run RUN] [--bins ha
 python -m sar_pipeline.analysis evaluate  --config <yaml> [--run RUN] [--name NAME] [--sets SET ...] [--save-oof]
 python -m sar_pipeline.analysis cv-layers --config <yaml> [--run RUN] --set SET
 python -m sar_pipeline.analysis class-map --config <yaml> [--run RUN] --set SET [--name NAME] --map-config <yaml> [--map-run RUN]
+python -m sar_pipeline.analysis model     --config <yaml> [--run RUN] [--name NAME] [--map-config <yaml> [--map-run RUN]]
 ```
 - Reads only local run outputs (`run_config.yaml`, grid, manifest `local_paths` of VERIFIED rows, `band_layout.csv`,
   `stack/track_<id>/dates.csv`). Writes to `processed/<aoi>/<season>/analysis/<run_id>/` (`pixel_features.analysis_dir`).
@@ -573,7 +574,15 @@ python -m sar_pipeline.analysis class-map --config <yaml> [--run RUN] --set SET 
   `target_precision, target_recall, target_f1, target_f1_field_vote, accuracy, macro_f1, f1_<class>, n_features`.
 - `maps.class_map`: requires identical band layouts in both runs (`check_same_layout`), rain flags from the training
   run, prediction only where `pixel_index.tif` band 3 (`aoi_mask`) = 1. Class raster uint8 nodata 0; target
-  probability raster uint8 percent nodata 255; QML palette in class-code order.
+  probability raster uint8 percent nodata 255; QML palette in class-code order. The loop is `maps.predict_aoi(cfg,
+  train_run, fs, cols, map_run, fitted_model, rules)` with `rules = {name: proba -> class index}`; `class_map` uses argmax.
+- `model.run`: feature set from config; outputs in `analysis/<run>/model_<set>/`: `holdout_split.csv` (gcp_id, group,
+  split), `holdout_composition.csv`, `tuning_results.csv` (one row per grid point, appended; resume by `spec` JSON),
+  `threshold_curve.csv`, `winner.json` (spec, threshold, dev OOF scores), `holdout_metrics.json` (written once, never
+  recomputed), `holdout_per_class.csv`, `holdout_confusion_<argmax|threshold>.csv`. Map in the map run's analysis folder:
+  `model_<rf|xgb>_<set>_classes.tif/.qml/.json`, `model_<rf|xgb>_<set>_<target>_prob.tif`. Grids are module constants
+  (`RF_GRID`, `XGB_GRID`); `check_no_holdout` raises if holdout fields reach tuning/threshold; `XGBLabels` wraps
+  XGBClassifier with class-name labels (sorted, same order as RF `classes_`).
 
 ---
 

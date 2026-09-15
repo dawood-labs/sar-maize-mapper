@@ -6,6 +6,7 @@ with labelled fields (ground-truth polygons):
 1. **Are the labels usable?** Geometry checks and a time-series review of every field.
 2. **Which features separate the classes?** Per-pixel features compared with spatial cross-validation.
 3. **What does a map look like?** An exploratory class map of an AOI.
+4. **How good is a tuned model on fields it never saw?** The model phase: holdout test and a validated map.
 
 Nothing here talks to Earth Engine: every step reads local run outputs only.
 
@@ -44,6 +45,7 @@ All steps: `python -m sar_pipeline.analysis <step> --config config/<aoi>_<season
 | `evaluate` | spatial CV of every feature set in the file | `cv_summary_<name>.csv`, `confusion_<set>.csv`, optional `oof_<set>.parquet` |
 | `cv-layers --set S` | CV results for QGIS | `cv_fields_<set>.gpkg`, `cv_pixels_<set>.tif` + `.qml` |
 | `class-map --set S --map-config C` | class map of the AOI of config `C` | `rf_<set>_classes.tif` + `.qml`, `rf_<set>_<target>_prob.tif`, `rf_<set>_classes.json` |
+| `model [--map-config C]` | holdout, tuning, threshold, holdout test, validated map (section 5) | `model_<set>/` folder; map `model_<rf\|xgb>_<set>_*` in the analysis folder of `C` |
 
 A typical session:
 
@@ -56,6 +58,7 @@ python -m sar_pipeline.analysis features --config config/my_aoi.yaml
 python -m sar_pipeline.analysis evaluate --config config/my_aoi.yaml --save-oof
 python -m sar_pipeline.analysis cv-layers --config config/my_aoi.yaml --set hm_w5_s0501
 python -m sar_pipeline.analysis class-map --config config/my_aoi.yaml --set hm_w5_s0501 --map-config config/other_aoi.yaml
+python -m sar_pipeline.analysis model     --config config/my_aoi.yaml --map-config config/other_aoi.yaml
 ```
 
 ### Field QC never deletes anything
@@ -119,19 +122,74 @@ first date depends on each region's crop calendar: choose the first half-month b
   classes.
 - **Why a fixed Random Forest.** The goal is to compare *features*, so the model and its settings stay fixed
   (`analysis.rf`). RF needs no scaling, handles correlated features and is hard to overfit badly, which makes
-  it a stable diagnostic baseline. It is **not** a tuned production model; tuning or other models are a later,
-  separate step.
+  it a stable diagnostic baseline. It is **not** a tuned production model; tuning is the model phase
+  (section 5).
 
 ---
 
-## 5. Caveats — read before quoting numbers
+## 5. Model phase
+
+The `model` step turns the chosen feature set (the one in `analysis.bins` / `window_px`) into a tested model
+and a map. It reuses `--name <file>.parquet` when that file holds the same feature set, otherwise it extracts
+the features once. Every stage writes its result to `analysis/<run_id>/model_<set>/` and is skipped on a rerun.
+
+**1. Lock away a holdout.** About 20 % of the fields are set aside *before* anything is tuned. Whole 5 km
+blocks (`group`) go to the holdout, never single fields, so holdout fields have no neighbours in training.
+The block choice is a seeded search: many random block orders are tried and the one is kept whose class
+shares are closest to the full data, with at least 15 holdout fields per class. `holdout_split.csv` lists
+every field's block and split; `holdout_composition.csv` gives fields and pixels per class. The code raises
+an error if a holdout field ever reaches tuning or threshold selection.
+
+**2. Tune on the rest (dev).** Two model families, each with a small grid, scored with grouped 5-fold CV on the
+dev fields only:
+
+| Model | Grid |
+|---|---|
+| Random Forest | `n_estimators` 200/500, `max_features` sqrt/0.3, `min_samples_leaf` 1/2/5, `class_weight` balanced/none |
+| XGBoost (`hist`) | `max_depth` 4/6/8, `learning_rate` 0.05/0.1, `n_estimators` 300/600, `subsample` 0.8, `colsample_bytree` 0.6/0.9, balanced sample weights on/off |
+
+The winner has the best target-class F1; ties (to 3 decimals) go to the better macro F1. All grid scores are
+in `tuning_results.csv`. To save time, settings that differ only in `n_estimators` are fitted once with the
+larger number and scored with the first N trees (RF) or boosting rounds (XGBoost), which gives exactly the
+same predictions as fitting the smaller model separately.
+
+**3. Pick a target threshold.** By default a pixel gets the class with the highest probability (*argmax*).
+When the target class is often confused with one neighbour, a lower or higher bar for the target trades
+precision against recall. The rule: *predict the target when its probability is ≥ t, otherwise the most
+likely other class*. `t` from 0.20 to 0.80 (step 0.05) is scored on the winner's dev out-of-fold
+probabilities and the t with the best target F1 is kept (`threshold_curve.csv`, `winner.json`).
+
+**4. Test once on the holdout.** The winner is fitted on all dev fields and scored on the holdout with both
+rules (argmax and threshold): per-class precision/recall/F1, confusion matrices, field majority-vote accuracy
+and target F1, and a 95 % interval of target precision/recall/F1 from 1000 bootstrap resamples of *fields*
+(pixels of one field are not independent). Files: `holdout_metrics.json`, `holdout_per_class.csv`,
+`holdout_confusion_<rule>.csv`. This is the number to quote. It is computed once: if `holdout_metrics.json`
+exists it is not recomputed, so the holdout cannot be tuned against by rerunning.
+
+**5. Map.** The winner is refitted on *all* fields (dev + holdout: more data, same settings) and applied to
+the AOI of `--map-config` with the threshold rule. Rain flags come from the training run, as in `class-map`.
+Outputs in that AOI's analysis folder: `model_<rf|xgb>_<set>_classes.tif` (+ `.qml`, nodata 0),
+`model_<rf|xgb>_<set>_<target>_prob.tif` (percent, nodata 255) and a `.json` with class area shares under
+both rules.
+
+To start over (new fields, new features), move the `model_<set>/` folder away: the step refuses to reuse it
+when the holdout split no longer matches the data.
+
+---
+
+## 6. Caveats — read before quoting numbers
 
 - **Scores describe field interiors.** Ground-truth polygons are drawn inside fields. Real maps also contain
   field edges, roads, trees and mixed pixels, where accuracy is lower.
 - **Class balance.** Training uses `class_weight: balanced`; the class shares in the ground truth are not the
   shares in the landscape. Precision in a real map depends on how common each class really is.
 - **The class map is not a validated product.** It is trained on all fields and applied to every AOI pixel,
-  including places the CV never tested. Use it to spot patterns and errors, not to report areas.
+  including places the CV never tested. Use it to spot patterns and errors, not to report areas. The model
+  phase map has a holdout score behind it, but that score still describes field interiors (above), and the
+  holdout is small: read its bootstrap interval, not just the point value.
+- **The threshold is tuned for the ground-truth class mix.** Fields are sampled evenly per class, not in
+  landscape proportions, so a threshold that maximises F1 on them can over- or under-map the target in a real
+  AOI. Compare the argmax and threshold area shares in the map `.json`.
 - **Rain flags of a map come from the training run.** Rain is averaged over each run's AOI, so a different AOI
   could flag different dates as wet. `class-map` uses the training run's flags so every bin picks the same
   acquisitions the model was trained on, and it stops if the two runs have different band layouts.

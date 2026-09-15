@@ -107,33 +107,28 @@ def check_same_layout(train_run: Path, map_run: Path) -> None:
         raise ValueError(f"band layouts of {train_run.name} and {map_run.name} differ: features would not be comparable")
 
 
-def class_map(cfg: dict, train_run: Path, set_name: str, map_run: Path, features_name: str = "features") -> Path:
-    """Train on all field pixels of `train_run`, predict every AOI pixel of `map_run`.
+def predict_aoi(cfg: dict, train_run: Path, fs: FeatureSet, cols: list[str], map_run: Path, model,
+                rules: dict) -> tuple[dict[str, np.ndarray], np.ndarray, dict]:
+    """Apply a fitted model to every AOI pixel of `map_run`.
+
+    `rules` = {name: function(probabilities) -> class index per row (index into model.classes_)}.
+    Returns ({rule: class-code raster}, target probability raster in percent, grid).
 
     Rain flags come from the TRAINING run: rain is averaged over each run's AOI, so a different AOI can flag
     different dates as wet, which would make bins pick different acquisitions than the model was trained on.
     """
     t0 = time.time()
     a = cfg["analysis"]
-    target = a["target_class"]
-    feats_path = analysis_dir(train_run) / f"{features_name}.parquet"
-    meta = json.loads(feats_path.with_suffix(".json").read_text())
-    fs = FeatureSet(**meta["sets"][set_name])
-    X = pd.read_parquet(feats_path)
-    cols = columns_for_set(X.columns, set_name)
-    model = make_model(cfg).fit(X[cols].to_numpy(dtype="float32"), X["label"].astype(str).to_numpy())
     classes = list(model.classes_)
     codes = gcp_qc.codes_from_config(cfg)
     code_of = np.array([codes[c] for c in classes], dtype="uint8")
-    t_idx = classes.index(target)
-    log.info("trained on %d pixels, %d features (%.0f s)", len(X), len(cols), time.time() - t0)
-
+    t_idx = classes.index(a["target_class"])
     check_same_layout(train_run, map_run)
     _, gd, tracks, season_start, end = run_context(map_run)
     plans = {tr: plans_for(map_run, tr, [fs], wet_flags(train_run, tr, float(a.get("rain_mm_24h", 5))), season_start, end)[0]
              for tr in tracks}
     man = manifest.read_manifest(map_run)
-    cls = np.zeros((gd["height"], gd["width"]), dtype="uint8")
+    cls = {name: np.zeros((gd["height"], gd["width"]), dtype="uint8") for name in rules}
     prob = np.full((gd["height"], gd["width"]), 255, dtype="uint8")
     map_run_cfg = config_mod.load_run_config(map_run)
     with rasterio.open(config_mod.grid_dir(map_run_cfg) / "pixel_index.tif") as idx:
@@ -153,20 +148,45 @@ def class_map(cfg: dict, train_run: Path, set_name: str, map_run: Path, features
             good = (idx.read(3, window=win).reshape(-1) == 1) & np.isfinite(F).all(axis=1)
             if good.any():
                 p = model.predict_proba(F[good])
-                sub_c = np.zeros(h * w, dtype="uint8"); sub_p = np.full(h * w, 255, dtype="uint8")
-                sub_c[good] = code_of[p.argmax(axis=1)]
+                sl = (slice(ch["row_off"], ch["row_off"] + h), slice(ch["col_off"], ch["col_off"] + w))
+                for name, rule in rules.items():
+                    sub_c = np.zeros(h * w, dtype="uint8")
+                    sub_c[good] = code_of[rule(p)]
+                    cls[name][sl] = sub_c.reshape(h, w)
+                sub_p = np.full(h * w, 255, dtype="uint8")
                 sub_p[good] = np.round(100 * p[:, t_idx]).astype("uint8")
-                cls[ch["row_off"]:ch["row_off"] + h, ch["col_off"]:ch["col_off"] + w] = sub_c.reshape(h, w)
-                prob[ch["row_off"]:ch["row_off"] + h, ch["col_off"]:ch["col_off"] + w] = sub_p.reshape(h, w)
+                prob[sl] = sub_p.reshape(h, w)
             log.info("  chunk %d/%d %s (%.0f s)", k, len(gd["chunks"]), ch["name"], time.time() - t0)
+    return cls, prob, gd
+
+
+def class_shares(cls: np.ndarray, codes: dict[str, int]) -> dict[str, float]:
+    """Percent of mapped pixels per class name."""
+    names = {v: k for k, v in codes.items()}
+    vals, counts = np.unique(cls[cls > 0], return_counts=True)
+    return {names[int(v)]: round(float(100 * n / counts.sum()), 1) for v, n in zip(vals, counts)}
+
+
+def class_map(cfg: dict, train_run: Path, set_name: str, map_run: Path, features_name: str = "features") -> Path:
+    """Train the fixed RF on all field pixels of `train_run`, predict every AOI pixel of `map_run` (argmax)."""
+    t0 = time.time()
+    target = cfg["analysis"]["target_class"]
+    feats_path = analysis_dir(train_run) / f"{features_name}.parquet"
+    meta = json.loads(feats_path.with_suffix(".json").read_text())
+    fs = FeatureSet(**meta["sets"][set_name])
+    X = pd.read_parquet(feats_path)
+    cols = columns_for_set(X.columns, set_name)
+    model = make_model(cfg).fit(X[cols].to_numpy(dtype="float32"), X["label"].astype(str).to_numpy())
+    log.info("trained on %d pixels, %d features (%.0f s)", len(X), len(cols), time.time() - t0)
+    cls, prob, gd = predict_aoi(cfg, train_run, fs, cols, map_run, model, {"argmax": lambda p: p.argmax(axis=1)})
+    cls = cls["argmax"]
+    codes = gcp_qc.codes_from_config(cfg)
     out_dir = analysis_dir(map_run); out_dir.mkdir(parents=True, exist_ok=True)
     cls_path = out_dir / f"rf_{set_name}_classes.tif"
     prob_path = out_dir / f"rf_{set_name}_{slug(target)}_prob.tif"
     write_class_rasters(cls_path, prob_path, cls, prob, gd["crs"], Affine(*gd["transform"]))
     write_qml(cls_path.with_suffix(".qml"), codes)
-    names = {v: k for k, v in codes.items()}
-    vals, counts = np.unique(cls[cls > 0], return_counts=True)
-    shares = {names[int(v)]: round(float(100 * n / counts.sum()), 1) for v, n in zip(vals, counts)}
+    shares = class_shares(cls, codes)
     run_meta.atomic_write_json(out_dir / f"rf_{set_name}_classes.json",
                                {"trained_on": train_run.name, "set": set_name, "class_share_percent": shares,
                                 "median_target_prob_of_target_pixels": float(np.median(prob[cls == codes[target]])) if (cls == codes[target]).any() else None})

@@ -7,6 +7,7 @@ Steps, in order:
   evaluate    spatial CV of the feature sets (optionally saving out-of-fold predictions)
   cv-layers   QGIS layers of the out-of-fold predictions for one set
   class-map   class map + target probability map of a run's AOI
+  model       holdout split, RF/XGBoost tuning, target threshold, one holdout test, validated map
 """
 from __future__ import annotations
 
@@ -49,6 +50,10 @@ def _parser() -> argparse.ArgumentParser:
     s.add_argument("--set", required=True)
     s.add_argument("--name", default="features")
     s.add_argument("--map-config", required=True, help="config of the AOI to map")
+    s.add_argument("--map-run", default=None)
+    s = add("model")
+    s.add_argument("--name", default="features", help="features file stem to reuse when its set matches the config")
+    s.add_argument("--map-config", default=None, help="config of the AOI to map (optional)")
     s.add_argument("--map-run", default=None)
     return p
 
@@ -100,6 +105,10 @@ def main(argv=None) -> int:
         from . import maps
         map_cfg = config_mod.load_config(args.map_config)
         maps.class_map(cfg, run, args.set, config_mod.run_dir(map_cfg, args.map_run), features_name=args.name)
+    elif args.step == "model":
+        from . import model
+        map_run = config_mod.run_dir(config_mod.load_config(args.map_config), args.map_run) if args.map_config else None
+        model.run(cfg, run, map_run, name=args.name)
     return 0
 
 
