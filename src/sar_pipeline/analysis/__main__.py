@@ -8,6 +8,7 @@ Steps, in order:
   cv-layers   QGIS layers of the out-of-fold predictions for one set
   class-map   class map + target probability map of a run's AOI
   model       holdout split, RF/XGBoost tuning, target threshold, one holdout test, validated map
+  field-labels  label a delineation's field polygons from a class map (geometry cleanup + two labels)
 """
 from __future__ import annotations
 
@@ -55,6 +56,16 @@ def _parser() -> argparse.ArgumentParser:
     s.add_argument("--name", default="features", help="features file stem to reuse when its set matches the config")
     s.add_argument("--map-config", default=None, help="config of the AOI to map (optional)")
     s.add_argument("--map-run", default=None)
+    s = add("field-labels")
+    s.add_argument("--delineation", required=True, help="field polygons traced on imagery (any vector file)")
+    s.add_argument("--class-raster", required=True, help="class map of this run's AOI (from class-map or model)")
+    s.add_argument("--prob-raster", default=None, help="target-probability map (default: the class raster's sibling)")
+    s.add_argument("--model", default=None, help="field-level model (.joblib) for the second label")
+    s.add_argument("--train-config", default=None, help="config of the run the model was trained on (default: --config)")
+    s.add_argument("--train-run", default=None, help="run id of that training run")
+    s.add_argument("--name", default="fields", help="output folder name under processed/<aoi>/<season>/fields/")
+    s.add_argument("--simplify-m", type=float, default=None,
+                   help="simplify outlines by this many metres first (default 0.5; 0 = off)")
     return p
 
 
@@ -109,6 +120,17 @@ def main(argv=None) -> int:
         from . import model
         map_run = config_mod.run_dir(config_mod.load_config(args.map_config), args.map_run) if args.map_config else None
         model.run(cfg, run, map_run, name=args.name)
+    elif args.step == "field-labels":
+        from pathlib import Path
+
+        from . import field_labels
+        train_cfg = config_mod.load_config(args.train_config) if args.train_config else cfg
+        train_run = config_mod.run_dir(train_cfg, args.train_run) if args.train_config or args.train_run else run
+        field_labels.run(cfg, run, Path(args.delineation), Path(args.class_raster),
+                         prob_raster=Path(args.prob_raster) if args.prob_raster else None,
+                         model_path=Path(args.model) if args.model else None,
+                         train_cfg=train_cfg, train_run=train_run, name=args.name,
+                         simplify_m=field_labels.SIMPLIFY_M if args.simplify_m is None else args.simplify_m)
     return 0
 
 

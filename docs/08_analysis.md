@@ -46,6 +46,7 @@ All steps: `python -m sar_pipeline.analysis <step> --config config/<aoi>_<season
 | `cv-layers --set S` | CV results for QGIS | `cv_fields_<set>.gpkg`, `cv_pixels_<set>.tif` + `.qml` |
 | `class-map --set S --map-config C` | class map of the AOI of config `C` | `rf_<set>_classes.tif` + `.qml`, `rf_<set>_<target>_prob.tif`, `rf_<set>_classes.json` |
 | `model [--map-config C]` | holdout, tuning, threshold, holdout test, validated map (section 5) | `model_<set>/` folder; map `model_<rf\|xgb>_<set>_*` in the analysis folder of `C` |
+| `field-labels --delineation D --class-raster R` | clean a field delineation and label every polygon from the class map (section 6) | `fields/<name>/fields_labelled.gpkg` + `.parquet` + `summary.json` |
 
 A typical session:
 
@@ -192,7 +193,90 @@ when the holdout split no longer matches the data.
 
 ---
 
-## 6. Caveats — read before quoting numbers
+## 6. Field labels
+
+A class map answers *what grows here* pixel by pixel; a client wants *which crop is in this field*. The
+`field-labels` step joins the two, given a delineation — field outlines traced on high-resolution imagery, by
+hand or by a segmentation model. One rule decides every question in it:
+
+> **the delineation owns the geometry, the class map owns only the label.**
+
+A 10 m raster edge is never allowed to become an output edge, except where the delineation has no polygon at
+all.
+
+```bash
+python -m sar_pipeline.analysis field-labels --config config/my_aoi.yaml \
+    --delineation data/fields/<layer>.shp \
+    --class-raster processed/<aoi>/<season>/analysis/<run>/model_xgb_<set>_classes.tif \
+    --prob-raster  processed/<aoi>/<season>/analysis/<run>/model_xgb_<set>_<target>_prob.tif \
+    --model .../final_models/xgb_field_level.joblib \
+    --train-config config/<training aoi>.yaml --train-run <run> --name fields_v001
+```
+
+**0. Simplify.** Outlines vectorised from a sub-metre mask carry a vertex every few decimetres: a pixel
+staircase, not a boundary anyone drew, and every step below pays for each vertex. They are simplified by
+`--simplify-m` metres first (default 0.5). On a traced layer this kept 11 % of the vertices, changed the area by
+0.13 % and moved the median boundary by 0.5 m, far below the 10 m pixel that decides the label, and made
+buffering about 100 times faster. Each polygon is simplified on its own; the few square decimetres of overlap
+that can create between neighbours are resolved in the next step. `--simplify-m 0` keeps every vertex.
+
+**1. Repair.** `make_valid`, then explode until nothing is nested. This matters more than it sounds: `make_valid`
+returns GeometryCollections, a collection can hold a MultiPolygon, and one explode followed by a
+`geom_type == "Polygon"` filter silently drops those — real acres that come back later as ragged blobs. Then
+overlapping ground is given to the **smaller** polygon, which keeps the finest tracing intact and trims the
+coarser one around it; the topological slivers that fall out (under 10 m²) are dropped.
+
+**2. Despike.** Traced layers carry whiskers: strips a metre or two wide running several metres out of an
+otherwise sensible field. The test that catches every one of them is *a shape that disappears when eroded by
+half a field's width was never a field*. Eroding and dilating alone would round every corner, so the opened body
+is dilated back with mitred joins and intersected with the original: true edges and corners survive, the tails
+stay outside. What is left of a line rather than a field then goes: compactness below 0.10, or a body under 0.05
+acres. There is deliberately no "skip it if it would lose more than X %" clause — the polygons that lose most are
+precisely the ones that are mostly tail.
+
+**3. Label.** Class counts per polygon give the majority class and the *purity* (its share of the polygon's
+classified pixels). Below 10 classified pixels a share is not a measurement: the polygon keeps its geometry, gets
+the label, and is flagged `too few pixels to judge`.
+
+**4. Cut mixed polygons.** A polygon under 0.85 purity usually holds more than one field. It gets one straight
+cut along its own orientation — from its minimum rotated rectangle, because subdivisions run parallel to a
+field's edges — at the offset that best separates the classes. Two guards: the cut has to raise purity by at
+least 0.08, and both sides have to still look like a field. A cut that adds nothing invents a boundary the ground
+does not have, and a cut running along the parent's own edge just shaves a needle off it.
+
+**5. Derive.** Classified ground no polygon claims gets a polygon of its own: an opening first (a repair, not a
+rejection — tentacles come off, a solid core survives), then the 0.15-acre floor, then shape gates on how much of
+its rotated rectangle it fills and how much perimeter it carries. The rectangle-fill floor sits at 0.45 on
+purpose: a triangle fills exactly half its rectangle and triangular fields are real. These polygons are tagged
+`origin = derived` so nobody mistakes a raster edge for traced geometry.
+
+**6. Second label.** If `--model` is given, each polygon also gets an independent label from the field-level
+model applied to the **mean** of its pixel features (the same features the pixel model uses). `agree` says
+whether the two labels match; where they do not, the field is worth a look.
+
+**7. Tidy.** Validity, no overlapping area and no lines, in the CRS the file is written in — cleaning in metres
+and reprojecting afterwards reopens what was just closed, because converting to degrees rounds coordinates.
+Traced geometry is placed first and derived polygons last, so a boundary the class map invented can never cut one
+that was drawn on imagery.
+
+**Output** in `processed/<aoi>/<season>/fields/<name>/`: `fields_labelled.gpkg` (and `.parquet`), plus
+`summary.json` with the counts and acres of every step. Columns worth filtering on in QGIS:
+
+| Column | Meaning |
+|---|---|
+| `origin` | `delineation`, `split` (a piece of a cut polygon) or `derived` (from the class map) |
+| `decision` | why this polygon looks the way it does |
+| `majority_class`, `majority_share` | the label and how pure the polygon is |
+| `field_model_class`, `field_model_maize_prob` | the second, independent label |
+| `agree` | do the two labels match? |
+| `n_classified`, `classified_share` | how much of the polygon the class map covered |
+| `area_acres`, `compactness` | size and shape |
+
+**Areas are in acres throughout**, including the summary.
+
+---
+
+## 7. Caveats — read before quoting numbers
 
 - **Scores describe field interiors.** Ground-truth polygons are drawn inside fields. Real maps also contain
   field edges, roads, trees and mixed pixels, where accuracy is lower.

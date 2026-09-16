@@ -558,6 +558,8 @@ python -m sar_pipeline.analysis evaluate  --config <yaml> [--run RUN] [--name NA
 python -m sar_pipeline.analysis cv-layers --config <yaml> [--run RUN] --set SET
 python -m sar_pipeline.analysis class-map --config <yaml> [--run RUN] --set SET [--name NAME] --map-config <yaml> [--map-run RUN]
 python -m sar_pipeline.analysis model     --config <yaml> [--run RUN] [--name NAME] [--map-config <yaml> [--map-run RUN]]
+python -m sar_pipeline.analysis field-labels --config <yaml> [--run RUN] --delineation FILE --class-raster TIF
+                                             [--prob-raster TIF] [--model JOBLIB] [--train-config <yaml> [--train-run RUN]] [--name NAME] [--simplify-m M]
 ```
 - Reads only local run outputs (`run_config.yaml`, grid, manifest `local_paths` of VERIFIED rows, `band_layout.csv`,
   `stack/track_<id>/dates.csv`). Writes to `processed/<aoi>/<season>/analysis/<run_id>/` (`pixel_features.analysis_dir`).
@@ -583,6 +585,19 @@ python -m sar_pipeline.analysis model     --config <yaml> [--run RUN] [--name NA
   `model_<rf|xgb>_<set>_classes.tif/.qml/.json`, `model_<rf|xgb>_<set>_<target>_prob.tif`. Grids are module constants
   (`RF_GRID`, `XGB_GRID`); `check_no_holdout` raises if holdout fields reach tuning/threshold; `XGBLabels` wraps
   XGBClassifier with class-name labels (sorted, same order as RF `classes_`).
+- `field_labels.run(cfg, map_run, delineation, class_raster, prob_raster, model_path, train_cfg, train_run, name)`:
+  outputs in `processed/<aoi>/<season>/fields/<name>/` (`fields_dir`): `fields_labelled.gpkg` (layer `fields`),
+  `fields_labelled.parquet`, `summary.json` (per-step counts and acres). Geometry work runs in the class raster's
+  CRS, the file is written in EPSG:4326. Thresholds are module constants with the reasoning in their comments
+  (`PURE`, `MIN_PIXELS`, `MIN_CUT_GAIN`, `MIN_DERIVED_ACRES`, `DESPIKE_M`, `MIN_FIELD_WIDTH_M`,
+  `MIN_SPLIT_WIDTH_M`, `MIN_COMPACTNESS_ANY`, `MIN_RECTANGULARITY`, `SLIVER_SQM`, `GRID`). Building blocks:
+  `repair` (make_valid + `explode_fully` + `resolve_overlaps`; `report_coverage=True` dissolves the layer for one
+  log line and is off because it dominates memory on a large layer), `despike` (mitred opening intersected back
+  with the original), `drop_lines`, `zonal_counts` / `collect_pixels` (windowed, `WINDOW_PX`, and the caller's
+  `claimed` mask marks ground a polygon covers), `label_polygons` (majority + cutting), `best_cut` / `halves`
+  (one straight cut, generalised to N classes), `derived_polygons`, `apply_field_model` (mean features per
+  polygon via `field_means`, using the map run's chunk files and the TRAINING run's rain flags), `tidy`.
+  `--model` is optional: without it only the majority label is written.
 
 ---
 
