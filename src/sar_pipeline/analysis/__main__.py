@@ -8,6 +8,8 @@ Steps, in order:
   cv-layers   QGIS layers of the out-of-fold predictions for one set
   class-map   class map + target probability map of a run's AOI
   model       holdout split, RF/XGBoost tuning, target threshold, one holdout test, validated map
+  final-models  refit the model winner on all fields as variants for missing data + a field-level model
+  predict     class map of a (large) AOI with the final models, best available model per pixel
   field-labels  label a delineation's field polygons from a class map (geometry cleanup + two labels)
 """
 from __future__ import annotations
@@ -56,6 +58,15 @@ def _parser() -> argparse.ArgumentParser:
     s.add_argument("--name", default="features", help="features file stem to reuse when its set matches the config")
     s.add_argument("--map-config", default=None, help="config of the AOI to map (optional)")
     s.add_argument("--map-run", default=None)
+    s = add("final-models")
+    s.add_argument("--name", default="features", help="features file stem (as used by the model step)")
+    s.add_argument("--without-bin", nargs="+", default=[], metavar="TRACK:MMDD",
+                   help="extra variant without one time bin of one track, e.g. RO123_ASC:0801")
+    s = add("predict")
+    s.add_argument("--map-config", required=True, help="config of the AOI to map")
+    s.add_argument("--map-run", default=None)
+    s.add_argument("--models", default=None, help="folder of .joblib models (default: the training run's final_models)")
+    s.add_argument("--name", default=None, help="output file stem (default: final_<model>_<set>)")
     s = add("field-labels")
     s.add_argument("--delineation", required=True, help="field polygons traced on imagery (any vector file)")
     s.add_argument("--class-raster", required=True, help="class map of this run's AOI (from class-map or model)")
@@ -120,6 +131,15 @@ def main(argv=None) -> int:
         from . import model
         map_run = config_mod.run_dir(config_mod.load_config(args.map_config), args.map_run) if args.map_config else None
         model.run(cfg, run, map_run, name=args.name)
+    elif args.step == "final-models":
+        from . import final_models
+        final_models.save_final_models(cfg, run, name=args.name, without_bins=args.without_bin)
+    elif args.step == "predict":
+        from pathlib import Path
+
+        from . import final_models
+        map_run = config_mod.run_dir(config_mod.load_config(args.map_config), args.map_run)
+        final_models.predict(cfg, run, map_run, models_dir=Path(args.models) if args.models else None, name=args.name)
     elif args.step == "field-labels":
         from pathlib import Path
 

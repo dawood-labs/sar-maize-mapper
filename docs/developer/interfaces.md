@@ -558,6 +558,8 @@ python -m sar_pipeline.analysis evaluate  --config <yaml> [--run RUN] [--name NA
 python -m sar_pipeline.analysis cv-layers --config <yaml> [--run RUN] --set SET
 python -m sar_pipeline.analysis class-map --config <yaml> [--run RUN] --set SET [--name NAME] --map-config <yaml> [--map-run RUN]
 python -m sar_pipeline.analysis model     --config <yaml> [--run RUN] [--name NAME] [--map-config <yaml> [--map-run RUN]]
+python -m sar_pipeline.analysis final-models --config <yaml> [--run RUN] [--name NAME] [--without-bin TRACK:MMDD ...]
+python -m sar_pipeline.analysis predict   --config <yaml> [--run RUN] --map-config <yaml> [--map-run RUN] [--models DIR] [--name NAME]
 python -m sar_pipeline.analysis field-labels --config <yaml> [--run RUN] --delineation FILE --class-raster TIF
                                              [--prob-raster TIF] [--model JOBLIB] [--train-config <yaml> [--train-run RUN]] [--name NAME] [--simplify-m M]
 ```
@@ -585,6 +587,15 @@ python -m sar_pipeline.analysis field-labels --config <yaml> [--run RUN] --delin
   `model_<rf|xgb>_<set>_classes.tif/.qml/.json`, `model_<rf|xgb>_<set>_<target>_prob.tif`. Grids are module constants
   (`RF_GRID`, `XGB_GRID`); `check_no_holdout` raises if holdout fields reach tuning/threshold; `XGBLabels` wraps
   XGBClassifier with class-name labels (sorted, same order as RF `classes_`).
+- `final_models.save_final_models(cfg, train_run, name, without_bins)`: needs `model_<set>/winner.json`; refuses a
+  `final_models/` folder that already holds `.joblib` files. Variants from `variant_columns(cols, s1.tracks,
+  without_bins)`. Each bundle is a joblib dict `{model, columns, labels, target, threshold, spec, feature_set, variant}`;
+  the field-level bundle adds `stat: "mean"` and has its own threshold. `model_card.json` holds grouped CV scores per
+  variant (`cv_scores`).
+- `final_models.predict(cfg, train_run, map_run, models_dir=None, name=None)`: `load_pixel_models` (skips bundles
+  with `stat`, orders by column count, requires equal labels and threshold; reads the older key `threshold_maize`),
+  `pick_models` (1-based variant per pixel, 0 = none), AOI mask from `pixel_index.tif` band 3, a track missing from
+  the manifest for a chunk counts as missing features. Workers: `resources.cpu_workers` with `MEM_PER_WORKER`.
 - `field_labels.run(cfg, map_run, delineation, class_raster, prob_raster, model_path, train_cfg, train_run, name)`:
   outputs in `processed/<aoi>/<season>/fields/<name>/` (`fields_dir`): `fields_labelled.gpkg` (layer `fields`),
   `fields_labelled.parquet`, `summary.json` (per-step counts and acres). Geometry work runs in the class raster's

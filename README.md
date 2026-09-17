@@ -138,6 +138,7 @@ What each output file contains: [docs/05_outputs_and_folders.md](docs/05_outputs
 
 | Doc | Read it when |
 |---|---|
+| [00 Step-by-step guide](docs/00_step_by_step_guide.md) | **start here**: the whole workflow, command by command, no coding needed |
 | [01 SAR basics](docs/01_sar_basics.md) | you are new to radar or want to know *why* each step exists |
 | [02 Setup](docs/02_setup.md) | installing on a laptop or JupyterHub |
 | [03 Pipeline overview](docs/03_pipeline_overview.md) | you want to understand the stages and their order |

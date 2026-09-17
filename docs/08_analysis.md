@@ -46,6 +46,8 @@ All steps: `python -m sar_pipeline.analysis <step> --config config/<aoi>_<season
 | `cv-layers --set S` | CV results for QGIS | `cv_fields_<set>.gpkg`, `cv_pixels_<set>.tif` + `.qml` |
 | `class-map --set S --map-config C` | class map of the AOI of config `C` | `rf_<set>_classes.tif` + `.qml`, `rf_<set>_<target>_prob.tif`, `rf_<set>_classes.json` |
 | `model [--map-config C]` | holdout, tuning, threshold, holdout test, validated map (section 5) | `model_<set>/` folder; map `model_<rf\|xgb>_<set>_*` in the analysis folder of `C` |
+| `final-models` | refit the `model` winner on all fields as variants for missing data + a field-level model (section 5) | `model_<set>/final_models/*.joblib` + `model_card.json` |
+| `predict --map-config C` | map of the AOI of `C` with the final models, best available model per pixel (section 5) | `<name>_classes.tif`, `_classes_argmax.tif`, `_<target>_prob.tif`, `_model_used.tif`, `_summary.json` |
 | `field-labels --delineation D --class-raster R` | clean a field delineation and label every polygon from the class map (section 6) | `fields/<name>/fields_labelled.gpkg` + `.parquet` + `summary.json` |
 
 A typical session:
@@ -187,6 +189,19 @@ the AOI of `--map-config` with the threshold rule. Rain flags come from the trai
 Outputs in that AOI's analysis folder: `model_<rf|xgb>_<set>_classes.tif` (+ `.qml`, nodata 0),
 `model_<rf|xgb>_<set>_<target>_prob.tif` (percent, nodata 255) and a `.json` with class area shares under
 both rules.
+
+**6. Final models (`final-models`).** A large AOI has pixels where a track is missing: outside the secondary
+track's swath, or on a date where one image slice is absent. A model that needs every feature cannot classify them.
+`final-models` refits the winner (same settings and threshold) on all fields as variants: `full`, `only_<primary
+track>`, and optionally `no_<track>_<MMDD>` per `--without-bin TRACK:MMDD`. Each variant gets a grouped 5-fold CV
+score on all fields in `model_card.json`, so the price of a fallback is known. It also fits `field_level`: the same
+model on the mean of each field's pixel features, with its own threshold, used by `field-labels` for the second label.
+
+**7. Map a large AOI (`predict`).** Every AOI pixel gets the variant with the most features whose features are all
+present; `<name>_model_used.tif` records which (the legend and acres per variant are in `<name>_summary.json`).
+Chunks are processed in parallel (about 1 GB per worker is budgeted). Both rules are written: the threshold rule as
+`<name>_classes.tif` and argmax as `<name>_classes_argmax.tif`, with acres per class in the summary. The band layouts
+of the training run and the map run must be identical.
 
 To start over (new fields, new features), move the `model_<set>/` folder away: the step refuses to reuse it
 when the holdout split no longer matches the data.

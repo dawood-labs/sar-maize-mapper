@@ -738,7 +738,7 @@ def apply_field_model(frame: gpd.GeoDataFrame, cfg: dict, train_run: Path, map_r
     import joblib
 
     bundle = joblib.load(model_path)
-    cols, labels, threshold = bundle["columns"], bundle["labels"], bundle["threshold_maize"]
+    cols, labels, threshold = bundle["columns"], bundle["labels"], bundle.get("threshold", bundle.get("threshold_maize"))
     if bundle.get("stat", "mean") != "mean":
         log.warning("the field model was fitted on the %s of each field; this step supplies the mean",
                     bundle.get("stat"))
